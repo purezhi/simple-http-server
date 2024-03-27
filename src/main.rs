@@ -33,7 +33,7 @@ use termcolor::{Color, ColorSpec};
 use color::{build_spec, Printer};
 use util::{
     enable_string, encode_link_path, error_io2iron, error_resp, now_string, root_link,
-    system_time_to_date_time, StringError,
+    system_time_to_date_time, StringError, FAVICON_IMAGE,
 };
 
 use middlewares::{AuthChecker, CompressionHandler, RequestLogger};
@@ -215,6 +215,12 @@ fn main() {
             .default_value("/")
             .takes_value(true)
             .help("Base URL to prepend in directory indexes. For reverse proxying. This prefix is supposed to be pre-stripped when reaching simple-http-server."))
+        .arg(clap::Arg::with_name("title")
+            .short("T")
+            .long("title")
+            .default_value("Simple HTTP(s) Server")
+            .takes_value(true)
+            .help("Title of index page."))
         .get_matches();
 
     let root = matches
@@ -280,6 +286,7 @@ fn main() {
 
     let silent = matches.is_present("silent");
     let base_url: &str = matches.value_of("base-url").unwrap();
+    let title: &str = matches.value_of("title").unwrap();
 
     let upload: Option<Upload> = if upload_arg {
         let token: String = thread_rng()
@@ -295,11 +302,23 @@ fn main() {
     if !silent {
         printer
             .println_out(
-                r#"     Index: {}, Cache: {}, Cors: {}, Coop: {}, Coep: {}, Range: {}, Sort: {}, Threads: {}
-          Upload: {}, CSRF Token: {}
-          Auth: {}, Compression: {}
-         https: {}, Cert: {}, Cert-Password: {}
-          Root: {},
+                r#"
+         Index: {}
+         Cache: {}
+          Cors: {}
+          Coop: {}
+          Coep: {}
+         Range: {}
+          Sort: {}
+       Threads: {}
+        Upload: {}
+    CSRF Token: {}
+          Auth: {}
+   Compression: {}
+         https: {}
+          Cert: {}
+ Cert-Password: {}
+          Root: {}
     TryFile404: {}
        Address: {}
     ======== [{}] ========"#,
@@ -361,6 +380,7 @@ fn main() {
         try_file_404: try_file_404.map(PathBuf::from),
         upload_size_limit,
         base_url: base_url.to_string(),
+        title: title.to_string(),
     });
     if cors {
         chain.link_around(CorsMiddleware::with_allow_any());
@@ -443,6 +463,7 @@ struct MainHandler {
     try_file_404: Option<PathBuf>,
     upload_size_limit: u64,
     base_url: String,
+    title: String,
 }
 
 impl Handler for MainHandler {
@@ -633,6 +654,8 @@ impl MainHandler {
         let mut fs_path = fs_path.to_owned();
         let mut rows = Vec::new();
 
+        let title_postfix: String;
+
         let read_dir = fs::read_dir(&fs_path).map_err(error_io2iron)?;
         let mut entries = Vec::new();
         for entry_result in read_dir {
@@ -646,19 +669,36 @@ impl MainHandler {
         // Breadcrumb navigation
         let breadcrumb = if !path_prefix.is_empty() {
             let mut breadcrumb = path_prefix.to_owned();
-            let mut bread_links: Vec<String> = vec![breadcrumb.pop().unwrap()];
+
+            let breadcrumb_item: String = breadcrumb.pop().unwrap();
+            let mut title_parts: Vec<String> = vec![breadcrumb_item.to_string()];
+            let mut bread_links: Vec<String> = vec![breadcrumb_item.to_string()];
+
             while !breadcrumb.is_empty() {
+                let item_link: String = encode_link_path(&breadcrumb);
+                let item_label = &breadcrumb.pop().unwrap().to_owned();
+                title_parts.push(
+                  encode_minimal(item_label)
+                );
                 bread_links.push(format!(
                     r#"<a href="{base_url}{link}/"><strong>{label}</strong></a>"#,
-                    link = encode_link_path(&breadcrumb),
-                    label = encode_minimal(&breadcrumb.pop().unwrap().to_owned()),
+                    link = item_link,
+                    label = encode_minimal(item_label),
                     base_url = base_url,
                 ));
             }
+
+            title_parts.reverse();
+            title_postfix = match title_parts.join(">").as_ref() {
+                "" => "".to_owned(),
+                _ => format!(" · {}", title_parts.join(">")),
+            };
+
             bread_links.push(root_link(base_url));
             bread_links.reverse();
             bread_links.join(" / ")
         } else {
+            title_postfix = "".to_owned();
             root_link(base_url)
         };
 
@@ -852,6 +892,8 @@ impl MainHandler {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+  {favicon_image}
+  <title>{title}{title_postfix}</title>
   <style> a {{ text-decoration:none; }} </style>
 </head>
 <body>
@@ -865,6 +907,9 @@ impl MainHandler {
 </body>
 </html>
 "#,
+            favicon_image = FAVICON_IMAGE,
+            title = self.title,
+            title_postfix = title_postfix,
             upload_form = upload_form,
             breadcrumb = breadcrumb,
             sort_links = sort_links,
