@@ -677,9 +677,7 @@ impl MainHandler {
             while !breadcrumb.is_empty() {
                 let item_link: String = encode_link_path(&breadcrumb);
                 let item_label = &breadcrumb.pop().unwrap().to_owned();
-                title_parts.push(
-                  encode_minimal(item_label)
-                );
+                title_parts.push(encode_minimal(item_label));
                 bread_links.push(format!(
                     r#"<a href="{base_url}{link}/"><strong>{label}</strong></a>"#,
                     link = item_link,
