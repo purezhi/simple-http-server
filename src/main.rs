@@ -18,6 +18,7 @@ use iron::headers::{AcceptEncoding, ContentEncoding, Encoding, QualityItem};
 use iron::method;
 use iron::modifiers::Redirect;
 use iron::status;
+use iron::status::Status;
 use iron::{Chain, Handler, Iron, IronError, IronResult, Request, Response, Set};
 use iron_cors::CorsMiddleware;
 use lazy_static::lazy_static;
@@ -530,7 +531,7 @@ impl Handler for MainHandler {
                     io::ErrorKind::NotFound => {
                         if let Some(ref p) = self.try_file_404 {
                             if Some(true) == fs::metadata(p).ok().map(|meta| meta.is_file()) {
-                                return self.send_file(req, p);
+                                return self.send_file(req, p, Some(status::NotFound));
                             }
                         }
                         status::NotFound
@@ -548,7 +549,7 @@ impl Handler for MainHandler {
                 .collect();
             self.list_directory(req, &fs_path, &path_prefix, &self.base_url[..])
         } else {
-            self.send_file(req, &fs_path)
+            self.send_file(req, &fs_path, None)
         }
     }
 }
@@ -814,7 +815,7 @@ impl MainHandler {
                     if filename == *fname {
                         // Automatic render index page
                         fs_path.push(filename);
-                        return self.send_file(req, &fs_path);
+                        return self.send_file(req, &fs_path, None);
                     }
                 }
             }
@@ -927,17 +928,21 @@ impl MainHandler {
         Ok(resp)
     }
 
-    fn send_file<P: AsRef<Path>>(&self, req: &Request, path: P) -> IronResult<Response> {
+    fn send_file<P: AsRef<Path>>(
+        &self,
+        req: &Request,
+        path: P,
+        status: Option<Status>,
+    ) -> IronResult<Response> {
         use filetime::FileTime;
         use iron::headers::{
-            AcceptRanges, ByteRangeSpec, ContentLength, ContentRange, ContentRangeSpec,
-            ContentType, ETag, EntityTag, IfMatch, IfRange, Range, RangeUnit,
+            AcceptRanges, ByteRangeSpec, ContentLength, ContentRange, ContentRangeSpec, ETag,
+            EntityTag, IfMatch, IfRange, Range, RangeUnit,
         };
         use iron::headers::{
             CacheControl, CacheDirective, HttpDate, IfModifiedSince, LastModified,
         };
         use iron::method::Method;
-        use iron::mime::{Mime, SubLevel, TopLevel};
 
         let path = path.as_ref();
         let metadata = fs::metadata(path).map_err(error_io2iron)?;
@@ -951,37 +956,29 @@ impl MainHandler {
             modified.nsec
         ));
 
-        let mut resp = Response::with(status::Ok);
+        let mut resp = Response::with(status.unwrap_or(status::Ok));
         if self.range {
             resp.headers.set(AcceptRanges(vec![RangeUnit::Bytes]));
         }
+        // Set mime type
+        let mime = mime_types::from_path(path).first_or_octet_stream();
+        resp.headers
+            .set_raw("content-type", vec![mime.to_string().into_bytes()]);
+        if self.coop {
+            resp.headers.set_raw(
+                "Cross-Origin-Opener-Policy",
+                vec!["same-origin".to_string().into_bytes()],
+            );
+        }
+        if self.coep {
+            resp.headers.set_raw(
+                "Cross-Origin-Embedder-Policy",
+                vec!["require-corp".to_string().into_bytes()],
+            );
+        }
         match req.method {
-            Method::Head => {
-                let content_type = req
-                    .headers
-                    .get::<ContentType>()
-                    .cloned()
-                    .unwrap_or_else(|| ContentType(Mime(TopLevel::Text, SubLevel::Plain, vec![])));
-                resp.headers.set(content_type);
-                resp.headers.set(ContentLength(metadata.len()));
-            }
+            Method::Head => resp.headers.set(ContentLength(metadata.len())),
             Method::Get => {
-                // Set mime type
-                let mime = mime_types::from_path(path).first_or_octet_stream();
-                resp.headers
-                    .set_raw("content-type", vec![mime.to_string().into_bytes()]);
-                if self.coop {
-                    resp.headers.set_raw(
-                        "Cross-Origin-Opener-Policy",
-                        vec!["same-origin".to_string().into_bytes()],
-                    );
-                }
-                if self.coep {
-                    resp.headers.set_raw(
-                        "Cross-Origin-Embedder-Policy",
-                        vec!["require-corp".to_string().into_bytes()],
-                    );
-                }
                 if self.range {
                     let mut range = req.headers.get::<Range>();
 
